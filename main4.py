@@ -197,24 +197,31 @@ def xui_base_url() -> str:
 
 
 async def xui_login(session: aiohttp.ClientSession) -> bool:
-    """Логинится в 3X-UI, сохраняет сессию."""
-    url = f"{xui_base_url()}/login"
+    """Логинится в 3X-UI v3."""
     try:
         headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Origin": f"{XUI_HOST}:{XUI_PORT}",
+            "Content-Type": "application/json",
             "Referer": f"{xui_base_url()}/",
         }
-        payload = f"username={XUI_USERNAME}&password={XUI_PASSWORD}"
-        async with session.post(url, data=payload, headers=headers, ssl=False) as resp:
+        # Сначала получаем страницу логина чтобы получить куки/csrf
+        async with session.get(f"{xui_base_url()}/", headers=headers, ssl=False) as r:
+            pass
+
+        # Логинимся через JSON (3X-UI v3 поддерживает JSON)
+        async with session.post(
+            f"{xui_base_url()}/login",
+            json={"username": XUI_USERNAME, "password": XUI_PASSWORD},
+            headers=headers,
+            ssl=False
+        ) as resp:
             text = await resp.text()
             logger.info(f"3X-UI логин: status={resp.status} body={text[:300]}")
-            if '"success":true' in text:
+            if resp.status == 200 and '"success":true' in text:
                 logger.info("3X-UI: успешный логин")
                 return True
-            logger.error(f"3X-UI: логин не удался: {resp.status} {text[:200]}")
+            logger.error(f"3X-UI: логин не удался: {resp.status} {text[:300]}")
             return False
     except Exception as e:
         logger.error(f"3X-UI: ошибка логина: {e}")
