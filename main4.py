@@ -15,7 +15,7 @@ import logging
 import os
 import uuid
 import aiosqlite
-import py3xui
+import aiohttp
 
 from datetime import datetime, timedelta
 from aiohttp import web
