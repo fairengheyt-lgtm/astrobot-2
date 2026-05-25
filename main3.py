@@ -191,12 +191,11 @@ def build_vless_link(vpn_uuid: str) -> str:
 async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str | None:
     """Создаёт клиента в 3X-UI. Возвращает UUID или None."""
     try:
-        api = py3xui.AsyncApi(
-            host=f"{XUI_HOST}:{XUI_PORT}",
-            username=XUI_USERNAME,
-            password=XUI_PASSWORD,
-            use_tls_verify=False,
-        )
+    api = py3xui.AsyncApi(
+    host=f"{XUI_HOST}:{XUI_PORT}",
+    username=XUI_USERNAME,
+    password=XUI_PASSWORD,
+    )
         await api.login()
 
         vpn_uuid = str(uuid.uuid4())
