@@ -200,15 +200,15 @@ async def xui_login(session: aiohttp.ClientSession) -> bool:
     """Логинится в 3X-UI, сохраняет сессию."""
     url = f"{xui_base_url()}/login"
     try:
-        async with session.post(url, json={
-            "username": XUI_USERNAME,
-            "password": XUI_PASSWORD,
-        }, ssl=False) as resp:
-            data = await resp.json()
-            if data.get("success"):
+        data = aiohttp.FormData()
+        data.add_field("username", XUI_USERNAME)
+        data.add_field("password", XUI_PASSWORD)
+        async with session.post(url, data=data, ssl=False) as resp:
+            text = await resp.text()
+            if '"success":true' in text or resp.status == 200:
                 logger.info("3X-UI: успешный логин")
                 return True
-            logger.error(f"3X-UI: логин не удался: {data}")
+            logger.error(f"3X-UI: логин не удался: {resp.status} {text[:200]}")
             return False
     except Exception as e:
         logger.error(f"3X-UI: ошибка логина: {e}")
