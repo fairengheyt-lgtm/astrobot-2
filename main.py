@@ -9,17 +9,17 @@ AstroVPN Bot — полная версия
 - Токен и секреты из ENV переменных
 - Railway: polling + aiohttp на порту 8080 одновременно
 """
-
+ 
 import asyncio
 import logging
 import os
 import uuid
 import aiosqlite
 import py3xui
-
+ 
 from datetime import datetime, timedelta
 from aiohttp import web
-
+ 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -29,30 +29,30 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery,
 )
-
+ 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
+ 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
-
+ 
 # ══════════════════════════════════════════════════════
 #  КОНФИГ — всё из переменных окружения
 # ══════════════════════════════════════════════════════
-
+ 
 BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS_RAW    = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS        = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
-
+ 
 # 3X-UI
 XUI_HOST         = os.getenv("XUI_HOST", "http://89.127.207.207")
 XUI_PORT         = int(os.getenv("XUI_PORT", "2053"))
 XUI_USERNAME     = os.getenv("XUI_USERNAME", "admin")
 XUI_PASSWORD     = os.getenv("XUI_PASSWORD", "")
 XUI_INBOUND_ID   = int(os.getenv("XUI_INBOUND_ID", "1"))
-
+ 
 # VPN params для VLESS ссылки
 VPN_SERVER_IP    = os.getenv("VPN_SERVER_IP", "89.127.207.207")
 VPN_PORT         = int(os.getenv("VPN_PORT", "443"))
@@ -61,26 +61,26 @@ VPN_SHORT_ID     = os.getenv("VPN_SHORT_ID", "")
 VPN_SNI          = os.getenv("VPN_SNI", "www.apple.com")
 VPN_FINGERPRINT  = os.getenv("VPN_FINGERPRINT", "chrome")
 VPN_FLOW         = os.getenv("VPN_FLOW", "xtls-rprx-vision")
-
+ 
 # Оплата
-STARS_AMOUNT     = int(os.getenv("STARS_AMOUNT", "1"))
+STARS_AMOUNT     = int(os.getenv("STARS_AMOUNT", "199"))
 PRICE_RUB        = int(os.getenv("PRICE_RUB", "199"))
 TRIBUTE_LINK     = os.getenv("TRIBUTE_LINK", "https://t.me/tribute/app?startapp=dI5p")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@astrovpn_support")
-
+ 
 # Подписка
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
-
+ 
 # БД
 DB_PATH = os.getenv("DB_PATH", "astrovpn.db")
-
+ 
 # Web
 PORT = int(os.getenv("PORT", "8080"))
-
+ 
 # ══════════════════════════════════════════════════════
 #  БАЗА ДАННЫХ — SQLite (работает на Railway)
 # ══════════════════════════════════════════════════════
-
+ 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -107,16 +107,16 @@ async def init_db():
             )
         """)
         await db.commit()
-
-
+ 
+ 
 async def db_get_user(tg_id: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE tg_id=?", (tg_id,)) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
-
-
+ 
+ 
 async def db_create_user(tg_id: int, name: str, username: str | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -124,8 +124,8 @@ async def db_create_user(tg_id: int, name: str, username: str | None = None):
             (tg_id, name, username)
         )
         await db.commit()
-
-
+ 
+ 
 async def db_set_subscription(tg_id: int, vpn_uuid: str, expires: datetime):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -133,8 +133,8 @@ async def db_set_subscription(tg_id: int, vpn_uuid: str, expires: datetime):
             (vpn_uuid, expires.isoformat(), tg_id)
         )
         await db.commit()
-
-
+ 
+ 
 async def db_revoke(tg_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -142,15 +142,15 @@ async def db_revoke(tg_id: int):
             (tg_id,)
         )
         await db.commit()
-
-
+ 
+ 
 async def db_all_users() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users ORDER BY created_at DESC") as cur:
             return [dict(r) for r in await cur.fetchall()]
-
-
+ 
+ 
 async def db_active_subs() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -158,8 +158,8 @@ async def db_active_subs() -> list[dict]:
             "SELECT * FROM users WHERE vpn_uuid IS NOT NULL"
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
-
-
+ 
+ 
 async def db_log_subscription(tg_id: int, start: datetime, end: datetime,
                                source: str, charge_id: str | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -168,12 +168,12 @@ async def db_log_subscription(tg_id: int, start: datetime, end: datetime,
             (tg_id, start.isoformat(), end.isoformat(), source, charge_id)
         )
         await db.commit()
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  3X-UI — создание/отключение клиентов
 # ══════════════════════════════════════════════════════
-
+ 
 def build_vless_link(vpn_uuid: str) -> str:
     """Собирает VLESS ссылку по UUID."""
     return (
@@ -186,23 +186,22 @@ def build_vless_link(vpn_uuid: str) -> str:
         f"&flow={VPN_FLOW}"
         f"#AstroVPN"
     )
-
-
+ 
+ 
 async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str | None:
     """Создаёт клиента в 3X-UI. Возвращает UUID или None."""
     try:
         api = py3xui.AsyncApi(
-    host=f"{XUI_HOST}:{XUI_PORT}/rIOdr1B4tPlsScark8",
-    username=XUI_USERNAME,
-    password=XUI_PASSWORD,
-    use_tls_verify=False,
-    prefix="/rIOdr1B4tPlsScark8",
-)
+            host=f"{XUI_HOST}:{XUI_PORT}",
+            username=XUI_USERNAME,
+            password=XUI_PASSWORD,
+            use_tls_verify=False,
+        )
         await api.login()
-
+ 
         vpn_uuid = str(uuid.uuid4())
         expire_ms = int(expire_date.timestamp() * 1000)
-
+ 
         client = py3xui.Client(
             id=vpn_uuid,
             email=f"tg_{tg_id}",
@@ -218,24 +217,20 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
         await api.client.add(inbound_id=XUI_INBOUND_ID, clients=[client])
         logger.info(f"3X-UI: создан клиент tg_id={tg_id} uuid={vpn_uuid}")
         return vpn_uuid
-
-    except ImportError:
-        # py3xui не установлен — генерируем UUID без реального создания (dev режим)
-        logger.warning("py3xui не установлен, используем UUID-заглушку")
-        return str(uuid.uuid4())
+ 
     except Exception as e:
         logger.error(f"3X-UI ошибка создания клиента tg_id={tg_id}: {e}")
         return None
-
-
+ 
+ 
 async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
     """Отключает клиента в 3X-UI."""
     try:
-        import py3xui
         api = py3xui.AsyncApi(
             host=f"{XUI_HOST}:{XUI_PORT}",
             username=XUI_USERNAME,
             password=XUI_PASSWORD,
+            use_tls_verify=False,
         )
         await api.login()
         client = py3xui.Client(
@@ -258,12 +253,45 @@ async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
     except Exception as e:
         logger.error(f"3X-UI ошибка отключения uuid={vpn_uuid}: {e}")
         return False
-
-
+ 
+ 
+async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datetime) -> bool:
+    """Обновляет дату истечения существующего клиента в 3X-UI."""
+    try:
+        api = py3xui.AsyncApi(
+            host=f"{XUI_HOST}:{XUI_PORT}",
+            username=XUI_USERNAME,
+            password=XUI_PASSWORD,
+            use_tls_verify=False,
+        )
+        await api.login()
+        expire_ms = int(expire_date.timestamp() * 1000)
+        client = py3xui.Client(
+            id=vpn_uuid,
+            email=f"tg_{tg_id}",
+            enable=True,
+            flow=VPN_FLOW,
+            limit_ip=1,
+            total_gb=0,
+            expire_time=expire_ms,
+            sub_id=vpn_uuid[:8],
+        )
+        await api.client.update(
+            client_id=vpn_uuid,
+            inbound_id=XUI_INBOUND_ID,
+            client=client,
+        )
+        logger.info(f"3X-UI: обновлён expire клиента uuid={vpn_uuid} до {expire_date}")
+        return True
+    except Exception as e:
+        logger.error(f"3X-UI ошибка обновления expire uuid={vpn_uuid}: {e}")
+        return False
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  ВЫДАЧА ПОДПИСКИ — центральная функция
 # ══════════════════════════════════════════════════════
-
+ 
 async def issue_subscription(
     bot: Bot,
     tg_id: int,
@@ -278,10 +306,10 @@ async def issue_subscription(
     if not user:
         logger.error(f"issue_subscription: пользователь {tg_id} не найден")
         return False
-
+ 
     now = datetime.utcnow()
     end = now + timedelta(days=SUBSCRIPTION_DAYS)
-
+ 
     # Если уже есть активная подписка — продлеваем от даты истечения
     existing_expires_raw = user.get("subscription_expires")
     if existing_expires_raw:
@@ -291,20 +319,22 @@ async def issue_subscription(
                 end = existing_expires + timedelta(days=SUBSCRIPTION_DAYS)
         except ValueError:
             pass
-
-    # Если уже есть UUID — переиспользуем (продление)
+ 
+    # Если уже есть UUID — обновляем expire (продление)
     existing_uuid = user.get("vpn_uuid")
     if existing_uuid:
         vpn_uuid = existing_uuid
-        # Обновляем expire в 3X-UI
-        await xui_disable_client(vpn_uuid, tg_id)  # сначала update через disable+enable
-        vpn_uuid = await xui_create_client(tg_id, user.get("name", f"user_{tg_id}"), end)
-        if not vpn_uuid:
-            try:
-                await bot.send_message(tg_id, f"❌ Ошибка создания ключа. Напишите {SUPPORT_USERNAME}")
-            except Exception:
-                pass
-            return False
+        # Обновляем expire_time в 3X-UI через update
+        ok = await xui_update_client_expire(vpn_uuid, tg_id, end)
+        if not ok:
+            # Если update не сработал — пробуем пересоздать
+            vpn_uuid = await xui_create_client(tg_id, user.get("name", f"user_{tg_id}"), end)
+            if not vpn_uuid:
+                try:
+                    await bot.send_message(tg_id, f"❌ Ошибка обновления ключа. Напишите {SUPPORT_USERNAME}")
+                except Exception:
+                    pass
+                return False
     else:
         vpn_uuid = await xui_create_client(tg_id, user.get("name", f"user_{tg_id}"), end)
         if not vpn_uuid:
@@ -313,21 +343,21 @@ async def issue_subscription(
             except Exception:
                 pass
             return False
-
+ 
     await db_set_subscription(tg_id, vpn_uuid, end)
     await db_log_subscription(tg_id, now, end, source, charge_id)
-
+ 
     vless = build_vless_link(vpn_uuid)
     receipt = build_receipt(source, now, end, vless)
     try:
         await bot.send_message(tg_id, receipt, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Не удалось отправить чек {tg_id}: {e}")
-
+ 
     logger.info(f"Подписка выдана: tg_id={tg_id}, source={source}, uuid={vpn_uuid}, до={end}")
     return True
-
-
+ 
+ 
 def build_receipt(source: str, start: datetime, end: datetime, vless: str) -> str:
     if source == "stars":
         method = f"⭐ Telegram Stars ({STARS_AMOUNT} ⭐)"
@@ -335,7 +365,7 @@ def build_receipt(source: str, start: datetime, end: datetime, vless: str) -> st
         method = "👤 Выдан администратором"
     else:
         method = f"💳 Tribute / СБП ({PRICE_RUB} ₽)"
-
+ 
     return (
         "🧾 <b>ЧЕК ОБ ОПЛАТЕ</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -350,12 +380,12 @@ def build_receipt(source: str, start: datetime, end: datetime, vless: str) -> st
         "💡 Нажмите на ключ чтобы скопировать\n"
         "📖 Как подключить — /guide"
     )
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  SCHEDULER — проверка истёкших подписок каждые 10 мин
 # ══════════════════════════════════════════════════════
-
+ 
 async def check_expired_subscriptions(bot: Bot):
     logger.debug("Scheduler: проверка истёкших подписок...")
     now = datetime.utcnow()
@@ -384,12 +414,12 @@ async def check_expired_subscriptions(bot: Bot):
                 )
             except Exception:
                 pass
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  TRIBUTE WEBHOOK
 # ══════════════════════════════════════════════════════
-
+ 
 async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Response:
     """
     Структура реального Tribute webhook:
@@ -409,28 +439,28 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
     except Exception as e:
         logger.warning(f"Tribute webhook: битый JSON: {e}")
         return web.Response(status=400, text="Bad JSON")
-
+ 
     logger.info(f"Tribute webhook получен: {data}")
-
+ 
     # Игнорируем тестовые события
     if data.get("test_event") == "test_event":
         logger.info("Tribute webhook: тестовое событие, игнорируем")
         return web.Response(status=200, text="OK")
-
+ 
     # Проверяем имя события
     if data.get("name") != "new_donation":
         logger.info(f"Tribute webhook: событие '{data.get('name')}', игнорируем")
         return web.Response(status=200, text="OK")
-
+ 
     payload = data.get("payload")
     if not payload or not isinstance(payload, dict):
         logger.warning("Tribute webhook: нет payload")
         return web.Response(status=400, text="Missing payload")
-
+ 
     # Получаем telegram_user_id из payload (НЕ из comment!)
     tg_id_raw = payload.get("telegram_user_id")
     amount = payload.get("amount", 0)
-
+ 
     if not tg_id_raw:
         logger.warning(f"Tribute webhook: нет telegram_user_id: {payload}")
         # Уведомляем админа
@@ -446,26 +476,33 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
             except Exception:
                 pass
         return web.Response(status=200, text="OK")
-
+ 
     tg_id = int(tg_id_raw)
-
-    # Проверяем сумму: 19900 копеек = 199 рублей
-    MIN_AMOUNT = (PRICE_RUB * 100) - 100  # небольшая погрешность
-    if amount < MIN_AMOUNT:
-        logger.warning(f"Tribute webhook: сумма {amount} < {MIN_AMOUNT}, tg_id={tg_id}")
+ 
+    # Tribute присылает сумму в копейках (19900 = 199 руб)
+    # Но некоторые версии присылают в рублях (199)
+    # Нормализуем: если сумма > 500, считаем копейки
+    if amount > 500:
+        amount_rub = amount / 100
+    else:
+        amount_rub = amount
+ 
+    MIN_AMOUNT_RUB = PRICE_RUB - 1  # погрешность 1 рубль
+    if amount_rub < MIN_AMOUNT_RUB:
+        logger.warning(f"Tribute webhook: сумма {amount_rub} ₽ < {PRICE_RUB} ₽, tg_id={tg_id}")
         try:
             await bot.send_message(
                 tg_id,
-                f"⚠️ Получена оплата {amount/100:.0f} ₽, но требуется {PRICE_RUB} ₽.\n"
+                f"⚠️ Получена оплата {amount_rub:.0f} ₽, но требуется {PRICE_RUB} ₽.\n"
                 f"Напишите {SUPPORT_USERNAME}",
                 parse_mode="HTML"
             )
         except Exception:
             pass
         return web.Response(status=200, text="OK")
-
-    logger.info(f"Tribute webhook: корректная оплата tg_id={tg_id}, {amount/100:.0f} ₽")
-
+ 
+    logger.info(f"Tribute webhook: корректная оплата tg_id={tg_id}, {amount_rub:.0f} ₽")
+ 
     # Создаём пользователя если не существует
     user = await db_get_user(tg_id)
     if not user:
@@ -477,12 +514,12 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
             name = f"user_{tg_id}"
             username = None
         await db_create_user(tg_id, name, username)
-
+ 
     try:
         await bot.send_message(tg_id, "✅ Оплата через Tribute получена! Создаём ваш ключ...")
     except Exception:
         pass
-
+ 
     tribute_payment_id = str(payload.get("id", ""))
     ok = await issue_subscription(
         bot=bot,
@@ -490,7 +527,7 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
         source="tribute",
         charge_id=tribute_payment_id,
     )
-
+ 
     # Уведомляем админа
     for admin_id in ADMIN_IDS:
         try:
@@ -500,19 +537,19 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
                 admin_id,
                 f"{status_emoji} <b>Tribute оплата</b>\n"
                 f"👤 {user.get('name','?')} (<code>{tg_id}</code>)\n"
-                f"💳 {amount/100:.0f} ₽",
+                f"💳 {amount_rub:.0f} ₽",
                 parse_mode="HTML"
             )
         except Exception:
             pass
-
+ 
     return web.Response(status=200, text="OK")
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
 # ══════════════════════════════════════════════════════
-
+ 
 def kb_main(has_sub: bool = False) -> InlineKeyboardMarkup:
     rows = []
     if has_sub:
@@ -526,14 +563,14 @@ def kb_main(has_sub: bool = False) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="📱 Как подключить", callback_data="guide")])
     rows.append([InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
+ 
+ 
 def kb_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")]
     ])
-
-
+ 
+ 
 def kb_buy() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
@@ -546,8 +583,8 @@ def kb_buy() -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
     ])
-
-
+ 
+ 
 def kb_guide() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -556,19 +593,19 @@ def kb_guide() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
     ])
-
-
+ 
+ 
 def kb_tribute_wait() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Я оплатил", callback_data="tribute_check")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
     ])
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  ВСПОМОГАТЕЛЬНЫЕ
 # ══════════════════════════════════════════════════════
-
+ 
 def is_sub_active(user: dict) -> bool:
     raw = user.get("subscription_expires")
     if not raw or not user.get("vpn_uuid"):
@@ -577,8 +614,8 @@ def is_sub_active(user: dict) -> bool:
         return datetime.fromisoformat(raw) > datetime.utcnow()
     except ValueError:
         return False
-
-
+ 
+ 
 async def safe_edit(message: types.Message, text: str, reply_markup=None):
     """Редактирует сообщение, игнорируя 'message not modified'."""
     try:
@@ -588,8 +625,8 @@ async def safe_edit(message: types.Message, text: str, reply_markup=None):
             await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"safe_edit fallback failed: {e}")
-
-
+ 
+ 
 def format_profile(user: dict) -> str:
     name = user.get("name") or "Пользователь"
     tg_id = user.get("tg_id")
@@ -609,17 +646,17 @@ def format_profile(user: dict) -> str:
         f"🆔 ID: <code>{tg_id}</code>\n\n"
         f"📡 Подписка:\n{sub_text}"
     )
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  ХЭНДЛЕРЫ — регистрируются в create_dp()
 # ══════════════════════════════════════════════════════
-
+ 
 def create_dp() -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
-
+ 
     # ── /start ──────────────────────────────────────────
-
+ 
     @dp.message(CommandStart())
     async def cmd_start(message: types.Message):
         tg_id = message.from_user.id
@@ -628,7 +665,7 @@ def create_dp() -> Dispatcher:
         await db_create_user(tg_id, name, username)
         user = await db_get_user(tg_id)
         has_sub = is_sub_active(user) if user else False
-
+ 
         text = (
             "🌐 <b>Добро пожаловать в AstroVPN!</b>\n\n"
             "Быстрый VPN на базе VLESS + Reality.\n"
@@ -636,9 +673,9 @@ def create_dp() -> Dispatcher:
             f"💎 <b>{SUBSCRIPTION_DAYS} дней</b> — {STARS_AMOUNT} ⭐ или {PRICE_RUB} ₽"
         )
         await message.answer(text, reply_markup=kb_main(has_sub))
-
+ 
     # ── menu callback ────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "menu")
     async def cb_menu(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -649,9 +686,9 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_main(has_sub))
         await call.answer()
-
+ 
     # ── profile ──────────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "profile")
     async def cb_profile(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -660,9 +697,9 @@ def create_dp() -> Dispatcher:
             return
         await safe_edit(call.message, format_profile(user), kb_back())
         await call.answer()
-
+ 
     # ── my key ───────────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "mykey")
     async def cb_mykey(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -685,9 +722,9 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
-
+ 
     # ── buy ──────────────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "buy")
     async def cb_buy(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -706,9 +743,9 @@ def create_dp() -> Dispatcher:
             )
         await safe_edit(call.message, text, kb_buy())
         await call.answer()
-
+ 
     # ── pay stars ────────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "pay_stars")
     async def cb_pay_stars(call: types.CallbackQuery):
         await call.answer()
@@ -720,22 +757,22 @@ def create_dp() -> Dispatcher:
             currency="XTR",
             prices=[LabeledPrice(label=f"VPN {SUBSCRIPTION_DAYS} дней", amount=STARS_AMOUNT)],
         )
-
+ 
     @dp.pre_checkout_query()
     async def pre_checkout(query: PreCheckoutQuery):
         await query.answer(ok=True)
-
+ 
     @dp.message(F.successful_payment)
     async def on_successful_payment(message: types.Message):
         tg_id = message.from_user.id
         charge_id = message.successful_payment.telegram_payment_charge_id
         logger.info(f"Stars оплата: tg_id={tg_id}, charge_id={charge_id}")
-
+ 
         user = await db_get_user(tg_id)
         if not user:
             await db_create_user(tg_id, message.from_user.full_name or "Пользователь",
                                   message.from_user.username)
-
+ 
         await message.answer("✅ Оплата получена! Создаём ваш ключ...")
         ok = await issue_subscription(bot=message.bot, tg_id=tg_id,
                                       source="stars", charge_id=charge_id)
@@ -758,15 +795,15 @@ def create_dp() -> Dispatcher:
                 )
             except Exception:
                 pass
-
+ 
     # ── pay tribute ──────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "pay_tribute")
     async def cb_pay_tribute(call: types.CallbackQuery):
         tg_id = call.from_user.id
         await db_create_user(tg_id, call.from_user.full_name or "Пользователь",
                              call.from_user.username)
-
+ 
         text = (
             "💳 <b>Оплата через СБП / Карту (Tribute)</b>\n\n"
             f"1️⃣ Перейдите по ссылке и оплатите <b>{PRICE_RUB} ₽</b>:\n"
@@ -776,7 +813,7 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_tribute_wait())
         await call.answer()
-
+ 
     @dp.callback_query(F.data == "tribute_check")
     async def cb_tribute_check(call: types.CallbackQuery):
         """Кнопка 'Я оплатил' — проверяем есть ли уже активная подписка."""
@@ -800,18 +837,18 @@ def create_dp() -> Dispatcher:
                 kb_tribute_wait()
             )
         await call.answer()
-
+ 
     # ── guide ────────────────────────────────────────────
-
+ 
     @dp.message(Command("guide"))
     async def cmd_guide(message: types.Message):
         await message.answer("📱 <b>Выберите платформу:</b>", reply_markup=kb_guide())
-
+ 
     @dp.callback_query(F.data == "guide")
     async def cb_guide(call: types.CallbackQuery):
         await safe_edit(call.message, "📱 <b>Выберите платформу:</b>", kb_guide())
         await call.answer()
-
+ 
     @dp.callback_query(F.data == "guide_ios")
     async def cb_guide_ios(call: types.CallbackQuery):
         text = (
@@ -826,7 +863,7 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
-
+ 
     @dp.callback_query(F.data == "guide_android")
     async def cb_guide_android(call: types.CallbackQuery):
         text = (
@@ -842,9 +879,9 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
-
+ 
     # ── support ──────────────────────────────────────────
-
+ 
     @dp.callback_query(F.data == "support")
     async def cb_support(call: types.CallbackQuery):
         text = (
@@ -854,12 +891,12 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
-
+ 
     # ── admin ────────────────────────────────────────────
-
+ 
     def admin_only_check(tg_id: int) -> bool:
         return tg_id in ADMIN_IDS
-
+ 
     @dp.message(Command("admin"))
     async def cmd_admin(message: types.Message):
         if not admin_only_check(message.from_user.id):
@@ -873,7 +910,7 @@ def create_dp() -> Dispatcher:
             "/addkey &lt;user_id&gt; — alias для /give\n"
         )
         await message.answer(text, parse_mode="HTML")
-
+ 
     @dp.message(Command("users"))
     async def cmd_users(message: types.Message):
         if not admin_only_check(message.from_user.id):
@@ -890,7 +927,7 @@ def create_dp() -> Dispatcher:
             lines.append(f"{status} <code>{u['tg_id']}</code> — {u.get('name','?')}")
         lines.append(f"\n📊 Активных: {active}/{len(users)}")
         await message.answer("\n".join(lines), parse_mode="HTML")
-
+ 
     @dp.message(Command("keys"))
     async def cmd_keys(message: types.Message):
         if not admin_only_check(message.from_user.id):
@@ -907,7 +944,7 @@ def create_dp() -> Dispatcher:
             uuid_short = (u.get("vpn_uuid") or "")[:18]
             lines.append(f"<code>{u['tg_id']}</code> до {exp_str}\n  <code>{uuid_short}...</code>")
         await message.answer("\n".join(lines), parse_mode="HTML")
-
+ 
     @dp.message(Command("give"))
     @dp.message(Command("addkey"))
     async def cmd_give(message: types.Message):
@@ -932,7 +969,7 @@ def create_dp() -> Dispatcher:
             await message.answer(f"✅ Подписка выдана <code>{target_id}</code>", parse_mode="HTML")
         else:
             await message.answer(f"❌ Ошибка при выдаче подписки {target_id}")
-
+ 
     @dp.message(Command("revoke"))
     async def cmd_revoke(message: types.Message):
         if not admin_only_check(message.from_user.id):
@@ -964,9 +1001,9 @@ def create_dp() -> Dispatcher:
             )
         except Exception:
             pass
-
+ 
     # ── любое другое сообщение ───────────────────────────
-
+ 
     @dp.message()
     async def any_message(message: types.Message):
         tg_id = message.from_user.id
@@ -980,27 +1017,27 @@ def create_dp() -> Dispatcher:
             f"💎 <b>{SUBSCRIPTION_DAYS} дней</b> — {STARS_AMOUNT} ⭐ или {PRICE_RUB} ₽"
         )
         await message.answer(text, reply_markup=kb_main(has_sub), parse_mode="HTML")
-
+ 
     return dp
-
-
+ 
+ 
 # ══════════════════════════════════════════════════════
 #  ТОЧКА ВХОДА
 # ══════════════════════════════════════════════════════
-
+ 
 async def main():
     if not BOT_TOKEN:
         raise ValueError("BOT_TOKEN не задан! Проверьте переменные окружения.")
-
+ 
     await init_db()
     logger.info("База данных инициализирована")
-
+ 
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = create_dp()
-
+ 
     # Запускаем scheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -1013,23 +1050,23 @@ async def main():
     )
     scheduler.start()
     logger.info("Scheduler запущен (каждые 10 минут)")
-
+ 
     # Запускаем aiohttp для Tribute webhook
     app = web.Application()
-
+ 
     async def webhook_route(request: web.Request) -> web.Response:
         return await tribute_webhook_handler(request, bot)
-
+ 
     app.router.add_post("/tribute/webhook", webhook_route)
     app.router.add_get("/health", lambda r: web.Response(text="OK"))
-
+ 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     logger.info(f"Tribute webhook сервер запущен на порту {PORT}")
     logger.info(f"Tribute URL: http://0.0.0.0:{PORT}/tribute/webhook")
-
+ 
     logger.info("Запуск бота (polling)...")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
@@ -1037,7 +1074,8 @@ async def main():
         scheduler.shutdown()
         await runner.cleanup()
         await bot.session.close()
-
-
+ 
+ 
 if __name__ == "__main__":
     asyncio.run(main())
+
