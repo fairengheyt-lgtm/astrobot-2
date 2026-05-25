@@ -225,12 +225,11 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
 async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
     """Отключает клиента в 3X-UI."""
     try:
-        api = py3xui.AsyncApi(
-            host=f"{XUI_HOST}:{XUI_PORT}",
-            username=XUI_USERNAME,
-            password=XUI_PASSWORD,
-            use_tls_verify=False,
-        )
+    api = py3xui.AsyncApi(
+    host=f"{XUI_HOST}:{XUI_PORT}",
+    username=XUI_USERNAME,
+    password=XUI_PASSWORD,
+    )
         await api.login()
         client = py3xui.Client(
             id=vpn_uuid,
@@ -257,12 +256,11 @@ async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
 async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datetime) -> bool:
     """Обновляет дату истечения существующего клиента в 3X-UI."""
     try:
-        api = py3xui.AsyncApi(
-            host=f"{XUI_HOST}:{XUI_PORT}",
-            username=XUI_USERNAME,
-            password=XUI_PASSWORD,
-            use_tls_verify=False,
-        )
+    api = py3xui.AsyncApi(
+    host=f"{XUI_HOST}:{XUI_PORT}",
+    username=XUI_USERNAME,
+    password=XUI_PASSWORD,
+    )
         await api.login()
         expire_ms = int(expire_date.timestamp() * 1000)
         client = py3xui.Client(
