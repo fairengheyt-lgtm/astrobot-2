@@ -192,7 +192,7 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
     """Создаёт клиента в 3X-UI. Возвращает UUID или None."""
     try:
         api = py3xui.AsyncApi(
-    host=f"{XUI_HOST}:{XUI_PORT}",
+    host=f"{XUI_HOST}:{XUI_PORT}/rIOdr1B4tPlsScark8",
     username=XUI_USERNAME,
     password=XUI_PASSWORD,
     use_tls_verify=False,
