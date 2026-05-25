@@ -62,7 +62,7 @@ VPN_FINGERPRINT  = os.getenv("VPN_FINGERPRINT", "chrome")
 VPN_FLOW         = os.getenv("VPN_FLOW", "xtls-rprx-vision")
 
 # Оплата
-STARS_AMOUNT     = int(os.getenv("STARS_AMOUNT", "199"))
+STARS_AMOUNT     = int(os.getenv("STARS_AMOUNT", "1"))
 PRICE_RUB        = int(os.getenv("PRICE_RUB", "199"))
 TRIBUTE_LINK     = os.getenv("TRIBUTE_LINK", "https://t.me/tribute/app?startapp=dI5p")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@astrovpn_support")
