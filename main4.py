@@ -199,30 +199,42 @@ def xui_base_url() -> str:
 async def xui_login(session: aiohttp.ClientSession) -> bool:
     """Логинится в 3X-UI v3."""
     try:
+        base = xui_base_url()
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Referer": f"{xui_base_url()}/",
         }
-        # Сначала получаем страницу логина чтобы получить куки/csrf
-        async with session.get(f"{xui_base_url()}/", headers=headers, ssl=False) as r:
-            pass
 
-        # Логинимся через JSON (3X-UI v3 поддерживает JSON)
+        # Пробуем JSON логин
         async with session.post(
-            f"{xui_base_url()}/login",
+            f"{base}/login",
             json={"username": XUI_USERNAME, "password": XUI_PASSWORD},
-            headers=headers,
-            ssl=False
+            headers={**headers, "Content-Type": "application/json"},
+            ssl=False,
+            allow_redirects=True,
         ) as resp:
             text = await resp.text()
-            logger.info(f"3X-UI логин: status={resp.status} body={text[:300]}")
+            logger.info(f"3X-UI логин JSON: status={resp.status} body={text[:300]}")
             if resp.status == 200 and '"success":true' in text:
-                logger.info("3X-UI: успешный логин")
+                logger.info("3X-UI: успешный логин (JSON)")
                 return True
-            logger.error(f"3X-UI: логин не удался: {resp.status} {text[:300]}")
-            return False
+
+        # Если JSON не сработал — пробуем form-data
+        async with session.post(
+            f"{base}/login",
+            data={"username": XUI_USERNAME, "password": XUI_PASSWORD},
+            headers=headers,
+            ssl=False,
+            allow_redirects=True,
+        ) as resp:
+            text = await resp.text()
+            logger.info(f"3X-UI логин FORM: status={resp.status} body={text[:300]}")
+            if resp.status == 200 and '"success":true' in text:
+                logger.info("3X-UI: успешный логин (FORM)")
+                return True
+
+        logger.error(f"3X-UI: оба метода логина не сработали")
+        return False
     except Exception as e:
         logger.error(f"3X-UI: ошибка логина: {e}")
         return False
@@ -235,7 +247,8 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
         expire_ms = int(expire_date.timestamp() * 1000)
 
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return None
 
@@ -270,7 +283,8 @@ async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
     """Отключает клиента в 3X-UI."""
     try:
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return False
 
@@ -304,7 +318,8 @@ async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datet
     try:
         expire_ms = int(expire_date.timestamp() * 1000)
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return False
 
