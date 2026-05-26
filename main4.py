@@ -237,36 +237,40 @@ def xui_auth_headers() -> dict:
 
 
 async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str | None:
-    """Создаёт клиента в 3X-UI. Возвращает UUID или None."""
+    """Создаёт клиента в 3X-UI v3. Возвращает UUID или None."""
     try:
         vpn_uuid = str(uuid.uuid4())
         expire_ms = int(expire_date.timestamp() * 1000)
 
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return None
 
-            url = f"{xui_base_url()}/panel/api/inbounds/addClient"
+            url = f"{xui_base_url()}/panel/api/clients/add"
             payload = {
-                "id": XUI_INBOUND_ID,
-                "settings": '{"clients":[{"id":"' + vpn_uuid + '",'
-                    '"email":"tg_' + str(tg_id) + '",'
-                    '"enable":true,'
-                    '"flow":"' + VPN_FLOW + '",'
-                    '"limitIp":1,'
-                    '"totalGB":0,'
-                    '"expiryTime":' + str(expire_ms) + ','
-                    '"subId":"' + vpn_uuid[:8] + '",'
-                    '"tgId":"' + str(tg_id) + '",'
-                    '"remark":"' + name[:20] + '"}]}'
+                "client": {
+                    "email": f"tg_{tg_id}",
+                    "id": vpn_uuid,
+                    "subId": vpn_uuid[:8],
+                    "flow": VPN_FLOW,
+                    "totalGB": 0,
+                    "expiryTime": expire_ms,
+                    "limitIp": 1,
+                    "tgId": tg_id,
+                    "comment": name[:50],
+                    "enable": True,
+                },
+                "inboundIds": [XUI_INBOUND_ID],
             }
             async with session.post(url, json=payload, ssl=False, headers=xui_auth_headers()) as resp:
-                data = await resp.json()
-                if data.get("success"):
+                text = await resp.text()
+                logger.info(f"3X-UI create: status={resp.status} body={text[:300]}")
+                if resp.status == 200 and '"success":true' in text:
                     logger.info(f"3X-UI: создан клиент tg_id={tg_id} uuid={vpn_uuid}")
                     return vpn_uuid
-                logger.error(f"3X-UI: ошибка создания клиента: {data}")
+                logger.error(f"3X-UI: ошибка создания: {text[:300]}")
                 return None
 
     except Exception as e:
@@ -275,70 +279,68 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
 
 
 async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
-    """Отключает клиента в 3X-UI."""
+    """Удаляет клиента в 3X-UI v3 по email."""
     try:
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return False
 
-            url = f"{xui_base_url()}/panel/api/inbounds/updateClient/{vpn_uuid}"
-            payload = {
-                "id": XUI_INBOUND_ID,
-                "settings": '{"clients":[{"id":"' + vpn_uuid + '",'
-                    '"email":"tg_' + str(tg_id) + '",'
-                    '"enable":false,'
-                    '"flow":"' + VPN_FLOW + '",'
-                    '"limitIp":1,'
-                    '"totalGB":0,'
-                    '"expiryTime":0,'
-                    '"subId":"' + vpn_uuid[:8] + '"}]}'
-            }
-            async with session.post(url, json=payload, ssl=False, headers=xui_auth_headers()) as resp:
-                data = await resp.json()
-                if data.get("success"):
-                    logger.info(f"3X-UI: отключён клиент uuid={vpn_uuid}")
+            email = f"tg_{tg_id}"
+            url = f"{xui_base_url()}/panel/api/clients/del/{email}"
+            async with session.post(url, ssl=False, headers=xui_auth_headers()) as resp:
+                text = await resp.text()
+                logger.info(f"3X-UI delete: status={resp.status} body={text[:200]}")
+                if resp.status == 200 and '"success":true' in text:
+                    logger.info(f"3X-UI: удалён клиент tg_id={tg_id}")
                     return True
-                logger.error(f"3X-UI: ошибка отключения: {data}")
+                logger.error(f"3X-UI: ошибка удаления: {text[:200]}")
                 return False
 
     except Exception as e:
-        logger.error(f"3X-UI ошибка отключения uuid={vpn_uuid}: {e}")
+        logger.error(f"3X-UI ошибка отключения tg_id={tg_id}: {e}")
         return False
 
 
 async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datetime) -> bool:
-    """Обновляет дату истечения существующего клиента в 3X-UI."""
+    """Обновляет дату истечения клиента в 3X-UI v3."""
     try:
         expire_ms = int(expire_date.timestamp() * 1000)
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        jar = aiohttp.CookieJar(unsafe=True)
+        async with aiohttp.ClientSession(connector=connector, cookie_jar=jar) as session:
             if not await xui_login(session):
                 return False
 
-            url = f"{xui_base_url()}/panel/api/inbounds/updateClient/{vpn_uuid}"
+            email = f"tg_{tg_id}"
+            url = f"{xui_base_url()}/panel/api/clients/update/{email}"
             payload = {
-                "id": XUI_INBOUND_ID,
-                "settings": '{"clients":[{"id":"' + vpn_uuid + '",'
-                    '"email":"tg_' + str(tg_id) + '",'
-                    '"enable":true,'
-                    '"flow":"' + VPN_FLOW + '",'
-                    '"limitIp":1,'
-                    '"totalGB":0,'
-                    '"expiryTime":' + str(expire_ms) + ','
-                    '"subId":"' + vpn_uuid[:8] + '"}]}'
+                "email": email,
+                "id": vpn_uuid,
+                "subId": vpn_uuid[:8],
+                "flow": VPN_FLOW,
+                "totalGB": 0,
+                "expiryTime": expire_ms,
+                "limitIp": 1,
+                "tgId": tg_id,
+                "enable": True,
             }
             async with session.post(url, json=payload, ssl=False, headers=xui_auth_headers()) as resp:
-                data = await resp.json()
-                if data.get("success"):
-                    logger.info(f"3X-UI: обновлён expire uuid={vpn_uuid} до {expire_date}")
+                text = await resp.text()
+                logger.info(f"3X-UI update: status={resp.status} body={text[:200]}")
+                if resp.status == 200 and '"success":true' in text:
+                    logger.info(f"3X-UI: обновлён клиент tg_id={tg_id}")
                     return True
-                logger.error(f"3X-UI: ошибка обновления expire: {data}")
+                logger.error(f"3X-UI: ошибка обновления: {text[:200]}")
                 return False
 
     except Exception as e:
-        logger.error(f"3X-UI ошибка обновления expire uuid={vpn_uuid}: {e}")
+        logger.error(f"3X-UI ошибка обновления tg_id={tg_id}: {e}")
         return False
+
+
+# OLD_FUNCTIONS_END
 
 
 # ══════════════════════════════════════════════════════
