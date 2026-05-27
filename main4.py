@@ -88,6 +88,12 @@ PORT = int(os.getenv("PORT", "8080"))
 # ══════════════════════════════════════════════════════
 
 async def init_db():
+    # Создаём папку для БД если её нет (нужно для Railway Volume на /data/)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+        logger.info(f"DB: создана папка {db_dir}")
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -317,6 +323,24 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
                 if resp.status == 200 and '"success":true' in text:
                     logger.info(f"3X-UI: создан клиент tg_id={tg_id} uuid={vpn_uuid}")
                     return vpn_uuid
+
+                # Если email уже существует — удаляем старого и создаём заново
+                if "email already in use" in text.lower() or "already in use" in text.lower():
+                    logger.info(f"3X-UI: клиент tg_{tg_id} уже существует — удаляем и создаём заново")
+                    email = f"tg_{tg_id}"
+                    del_url = f"{xui_base_url()}/panel/api/clients/del/{email}"
+                    async with session.post(del_url, ssl=False, headers=xui_auth_headers()) as del_resp:
+                        del_text = await del_resp.text()
+                        logger.info(f"3X-UI delete старого: {del_resp.status} {del_text[:200]}")
+
+                    # Повторно создаём
+                    async with session.post(url, json=payload, ssl=False, headers=xui_auth_headers()) as resp2:
+                        text2 = await resp2.text()
+                        logger.info(f"3X-UI create retry: status={resp2.status} body={text2[:300]}")
+                        if resp2.status == 200 and '"success":true' in text2:
+                            logger.info(f"3X-UI: пересоздан клиент tg_id={tg_id} uuid={vpn_uuid}")
+                            return vpn_uuid
+
                 logger.error(f"3X-UI: ошибка создания: {text[:300]}")
                 return None
 
