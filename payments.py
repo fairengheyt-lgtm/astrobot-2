@@ -15,7 +15,7 @@ from config import (
 )
 from database import db_get_user, db_create_user, db_is_banned
 from subscription import issue_subscription
-from handlers.user import (
+from user import (
     kb_back, safe_edit, is_sub_active,
 )
 

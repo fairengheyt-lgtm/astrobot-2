@@ -19,10 +19,10 @@ from config import BOT_TOKEN, PORT
 from database import init_db
 from notifications import check_expired_subscriptions, reminders_job
 
-from handlers.admin import router as admin_router
-from handlers.servers import router as servers_router
-from handlers.payments import router as payments_router, tribute_webhook_handler
-from handlers.user import router as user_router
+from admin import router as admin_router
+from servers import router as servers_router
+from payments import router as payments_router, tribute_webhook_handler
+from user import router as user_router
 
 logging.basicConfig(
     level=logging.INFO,
