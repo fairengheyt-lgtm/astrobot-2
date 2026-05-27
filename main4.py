@@ -8,6 +8,7 @@ AstroVPN Bot — полная версия
 - Все edit_message_text обёрнуты в try/except
 - Токен и секреты из ENV переменных
 - Railway: polling + aiohttp на порту 8080 одновременно
+- Реферальная программа: +7 дней за каждого оплатившего друга
 """
 
 import asyncio
@@ -23,7 +24,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -73,6 +74,9 @@ SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@astrovpn_support")
 # Подписка
 SUBSCRIPTION_DAYS = int(os.getenv("SUBSCRIPTION_DAYS", "30"))
 
+# Реферальная программа
+REFERRAL_BONUS_DAYS = 7
+
 # БД
 DB_PATH = os.getenv("DB_PATH", "astrovpn.db")
 
@@ -108,6 +112,15 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+
+        # Безопасно добавляем колонку referred_by
+        async with db.execute("PRAGMA table_info(users)") as cur:
+            rows = await cur.fetchall()
+        existing_cols = {row[1] for row in rows}
+        if "referred_by" not in existing_cols:
+            await db.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
+            logger.info("DB: добавлена колонка users.referred_by")
+
         await db.commit()
 
 
@@ -172,12 +185,52 @@ async def db_log_subscription(tg_id: int, start: datetime, end: datetime,
         await db.commit()
 
 
+# ── Реферальная программа ──────────────────────────────
+
+async def db_set_referrer(tg_id: int, referrer_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET referred_by=? WHERE tg_id=? AND referred_by IS NULL",
+            (referrer_id, tg_id)
+        )
+        await db.commit()
+
+
+async def db_count_referrals(referrer_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE referred_by=?", (referrer_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def db_count_referral_payments(referrer_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM subscriptions s "
+            "JOIN users u ON s.tg_id = u.tg_id "
+            "WHERE u.referred_by=?",
+            (referrer_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def db_extend_subscription_expires(tg_id: int, new_expires: datetime):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET subscription_expires=? WHERE tg_id=?",
+            (new_expires.isoformat(), tg_id)
+        )
+        await db.commit()
+
+
 # ══════════════════════════════════════════════════════
 #  3X-UI — создание/отключение клиентов
 # ══════════════════════════════════════════════════════
 
 def build_vless_link(vpn_uuid: str) -> str:
-    """Собирает VLESS ссылку по UUID."""
     return (
         f"vless://{vpn_uuid}@{VPN_SERVER_IP}:{VPN_PORT}"
         f"?type=tcp&security=reality"
@@ -198,7 +251,6 @@ def xui_base_url() -> str:
 
 
 async def xui_login(session: aiohttp.ClientSession) -> bool:
-    """Логин в 3X-UI v3. Если задан XUI_TOKEN — пропускаем логин (токен идёт в headers)."""
     if XUI_TOKEN:
         logger.info("3X-UI: используется API токен")
         return True
@@ -218,11 +270,8 @@ async def xui_login(session: aiohttp.ClientSession) -> bool:
             ssl=False
         ) as resp:
             text = await resp.text()
-            logger.info(f"3X-UI логин: status={resp.status} body={text[:300]}")
             if resp.status == 200 and '"success":true' in text:
-                logger.info("3X-UI: успешный логин")
                 return True
-            logger.error(f"3X-UI: логин не удался: {resp.status} {text[:300]}")
             return False
     except Exception as e:
         logger.error(f"3X-UI: ошибка логина: {e}")
@@ -230,14 +279,12 @@ async def xui_login(session: aiohttp.ClientSession) -> bool:
 
 
 def xui_auth_headers() -> dict:
-    """Возвращает headers с Bearer токеном если он задан."""
     if XUI_TOKEN:
         return {"Authorization": f"Bearer {XUI_TOKEN}"}
     return {}
 
 
 async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str | None:
-    """Создаёт клиента в 3X-UI v3. Возвращает UUID или None."""
     try:
         vpn_uuid = str(uuid.uuid4())
         expire_ms = int(expire_date.timestamp() * 1000)
@@ -279,7 +326,6 @@ async def xui_create_client(tg_id: int, name: str, expire_date: datetime) -> str
 
 
 async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
-    """Удаляет клиента в 3X-UI v3 по email."""
     try:
         connector = aiohttp.TCPConnector(ssl=False)
         jar = aiohttp.CookieJar(unsafe=True)
@@ -291,11 +337,9 @@ async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
             url = f"{xui_base_url()}/panel/api/clients/del/{email}"
             async with session.post(url, ssl=False, headers=xui_auth_headers()) as resp:
                 text = await resp.text()
-                logger.info(f"3X-UI delete: status={resp.status} body={text[:200]}")
                 if resp.status == 200 and '"success":true' in text:
                     logger.info(f"3X-UI: удалён клиент tg_id={tg_id}")
                     return True
-                logger.error(f"3X-UI: ошибка удаления: {text[:200]}")
                 return False
 
     except Exception as e:
@@ -304,7 +348,6 @@ async def xui_disable_client(vpn_uuid: str, tg_id: int) -> bool:
 
 
 async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datetime) -> bool:
-    """Обновляет дату истечения клиента в 3X-UI v3."""
     try:
         expire_ms = int(expire_date.timestamp() * 1000)
         connector = aiohttp.TCPConnector(ssl=False)
@@ -328,11 +371,9 @@ async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datet
             }
             async with session.post(url, json=payload, ssl=False, headers=xui_auth_headers()) as resp:
                 text = await resp.text()
-                logger.info(f"3X-UI update: status={resp.status} body={text[:200]}")
                 if resp.status == 200 and '"success":true' in text:
                     logger.info(f"3X-UI: обновлён клиент tg_id={tg_id}")
                     return True
-                logger.error(f"3X-UI: ошибка обновления: {text[:200]}")
                 return False
 
     except Exception as e:
@@ -340,7 +381,57 @@ async def xui_update_client_expire(vpn_uuid: str, tg_id: int, expire_date: datet
         return False
 
 
-# OLD_FUNCTIONS_END
+# ══════════════════════════════════════════════════════
+#  РЕФЕРАЛЬНЫЙ БОНУС
+# ══════════════════════════════════════════════════════
+
+async def grant_referral_bonus(bot: Bot, referrer_id: int, referred_id: int):
+    referrer = await db_get_user(referrer_id)
+    if not referrer:
+        return
+
+    now = datetime.utcnow()
+    raw = referrer.get("subscription_expires")
+    if raw:
+        try:
+            current = datetime.fromisoformat(raw)
+        except ValueError:
+            current = now
+    else:
+        current = now
+
+    base = current if current > now else now
+    new_expires = base + timedelta(days=REFERRAL_BONUS_DAYS)
+
+    vpn_uuid = referrer.get("vpn_uuid")
+    if vpn_uuid:
+        try:
+            await xui_update_client_expire(vpn_uuid, referrer_id, new_expires)
+        except Exception as e:
+            logger.warning(f"Реф. бонус: 3X-UI update не удался для {referrer_id}: {e}")
+
+    await db_extend_subscription_expires(referrer_id, new_expires)
+
+    try:
+        if vpn_uuid:
+            text = (
+                "🎁 <b>Реферальный бонус!</b>\n\n"
+                "По вашей ссылке оплатил новый пользователь.\n"
+                f"Вам начислено <b>+{REFERRAL_BONUS_DAYS} дней</b> к подписке ⭐\n\n"
+                f"📅 Подписка теперь до: <b>{new_expires.strftime('%d.%m.%Y')}</b>"
+            )
+        else:
+            text = (
+                "🎁 <b>Реферальный бонус!</b>\n\n"
+                "По вашей ссылке оплатил новый пользователь.\n"
+                f"Вам начислено <b>+{REFERRAL_BONUS_DAYS} дней</b> ⭐\n\n"
+                "Бонус применится, как только вы оформите подписку."
+            )
+        await bot.send_message(referrer_id, text, parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"Реф. бонус: не удалось уведомить {referrer_id}: {e}")
+
+    logger.info(f"Реф. бонус: tg_id={referrer_id} +{REFERRAL_BONUS_DAYS}д за tg_id={referred_id}")
 
 
 # ══════════════════════════════════════════════════════
@@ -353,10 +444,6 @@ async def issue_subscription(
     source: str,
     charge_id: str | None = None,
 ) -> bool:
-    """
-    Создаёт VPN клиента в 3X-UI, сохраняет в БД, отправляет чек.
-    source: 'stars' | 'tribute' | 'admin'
-    """
     user = await db_get_user(tg_id)
     if not user:
         logger.error(f"issue_subscription: пользователь {tg_id} не найден")
@@ -365,7 +452,6 @@ async def issue_subscription(
     now = datetime.utcnow()
     end = now + timedelta(days=SUBSCRIPTION_DAYS)
 
-    # Если уже есть активная подписка — продлеваем от даты истечения
     existing_expires_raw = user.get("subscription_expires")
     if existing_expires_raw:
         try:
@@ -375,14 +461,11 @@ async def issue_subscription(
         except ValueError:
             pass
 
-    # Если уже есть UUID — обновляем expire (продление)
     existing_uuid = user.get("vpn_uuid")
     if existing_uuid:
         vpn_uuid = existing_uuid
-        # Обновляем expire_time в 3X-UI через update
         ok = await xui_update_client_expire(vpn_uuid, tg_id, end)
         if not ok:
-            # Если update не сработал — пробуем пересоздать
             vpn_uuid = await xui_create_client(tg_id, user.get("name", f"user_{tg_id}"), end)
             if not vpn_uuid:
                 try:
@@ -410,6 +493,14 @@ async def issue_subscription(
         logger.error(f"Не удалось отправить чек {tg_id}: {e}")
 
     logger.info(f"Подписка выдана: tg_id={tg_id}, source={source}, uuid={vpn_uuid}, до={end}")
+
+    referrer_id = user.get("referred_by")
+    if referrer_id and referrer_id != tg_id:
+        try:
+            await grant_referral_bonus(bot, int(referrer_id), tg_id)
+        except Exception as e:
+            logger.error(f"Реф. бонус: ошибка для referrer={referrer_id}: {e}")
+
     return True
 
 
@@ -476,19 +567,6 @@ async def check_expired_subscriptions(bot: Bot):
 # ══════════════════════════════════════════════════════
 
 async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Response:
-    """
-    Структура реального Tribute webhook:
-    {
-      "name": "new_donation",
-      "payload": {
-        "telegram_user_id": 123456789,
-        "amount": 19900,   <- копейки (199 рублей = 19900)
-        "currency": "RUB",
-        "id": "payment_id"
-      }
-    }
-    Тестовый запрос: {"test_event": "test_event"} — игнорируем.
-    """
     try:
         data = await request.json()
     except Exception as e:
@@ -497,28 +575,20 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
 
     logger.info(f"Tribute webhook получен: {data}")
 
-    # Игнорируем тестовые события
     if data.get("test_event") == "test_event":
-        logger.info("Tribute webhook: тестовое событие, игнорируем")
         return web.Response(status=200, text="OK")
 
-    # Проверяем имя события
     if data.get("name") != "new_donation":
-        logger.info(f"Tribute webhook: событие '{data.get('name')}', игнорируем")
         return web.Response(status=200, text="OK")
 
     payload = data.get("payload")
     if not payload or not isinstance(payload, dict):
-        logger.warning("Tribute webhook: нет payload")
         return web.Response(status=400, text="Missing payload")
 
-    # Получаем telegram_user_id из payload (НЕ из comment!)
     tg_id_raw = payload.get("telegram_user_id")
     amount = payload.get("amount", 0)
 
     if not tg_id_raw:
-        logger.warning(f"Tribute webhook: нет telegram_user_id: {payload}")
-        # Уведомляем админа
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
@@ -534,17 +604,13 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
 
     tg_id = int(tg_id_raw)
 
-    # Tribute присылает сумму в копейках (19900 = 199 руб)
-    # Но некоторые версии присылают в рублях (199)
-    # Нормализуем: если сумма > 500, считаем копейки
     if amount > 500:
         amount_rub = amount / 100
     else:
         amount_rub = amount
 
-    MIN_AMOUNT_RUB = PRICE_RUB - 1  # погрешность 1 рубль
+    MIN_AMOUNT_RUB = PRICE_RUB - 1
     if amount_rub < MIN_AMOUNT_RUB:
-        logger.warning(f"Tribute webhook: сумма {amount_rub} ₽ < {PRICE_RUB} ₽, tg_id={tg_id}")
         try:
             await bot.send_message(
                 tg_id,
@@ -556,9 +622,6 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
             pass
         return web.Response(status=200, text="OK")
 
-    logger.info(f"Tribute webhook: корректная оплата tg_id={tg_id}, {amount_rub:.0f} ₽")
-
-    # Создаём пользователя если не существует
     user = await db_get_user(tg_id)
     if not user:
         try:
@@ -583,7 +646,6 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot) -> web.Respons
         charge_id=tribute_payment_id,
     )
 
-    # Уведомляем админа
     for admin_id in ADMIN_IDS:
         try:
             user = await db_get_user(tg_id)
@@ -616,6 +678,7 @@ def kb_main(has_sub: bool = False) -> InlineKeyboardMarkup:
     else:
         rows.append([InlineKeyboardButton(text="🚀 Получить доступ", callback_data="buy")])
     rows.append([InlineKeyboardButton(text="📱 Как подключить", callback_data="guide")])
+    rows.append([InlineKeyboardButton(text="🎁 Рефералы", callback_data="referrals")])
     rows.append([InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -672,7 +735,6 @@ def is_sub_active(user: dict) -> bool:
 
 
 async def safe_edit(message: types.Message, text: str, reply_markup=None):
-    """Редактирует сообщение, игнорируя 'message not modified'."""
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
     except Exception:
@@ -704,20 +766,33 @@ def format_profile(user: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════
-#  ХЭНДЛЕРЫ — регистрируются в create_dp()
+#  ХЭНДЛЕРЫ
 # ══════════════════════════════════════════════════════
 
 def create_dp() -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
-    # ── /start ──────────────────────────────────────────
-
     @dp.message(CommandStart())
-    async def cmd_start(message: types.Message):
+    async def cmd_start(message: types.Message, command: CommandObject):
         tg_id = message.from_user.id
         name = message.from_user.full_name or "Пользователь"
         username = message.from_user.username
+
+        existing = await db_get_user(tg_id)
         await db_create_user(tg_id, name, username)
+
+        args = (command.args or "").strip() if command else ""
+        if not existing and args.startswith("ref"):
+            try:
+                referrer_id = int(args[3:])
+                if referrer_id != tg_id:
+                    referrer = await db_get_user(referrer_id)
+                    if referrer:
+                        await db_set_referrer(tg_id, referrer_id)
+                        logger.info(f"Реф: tg_id={tg_id} приглашён referrer={referrer_id}")
+            except (ValueError, TypeError):
+                pass
+
         user = await db_get_user(tg_id)
         has_sub = is_sub_active(user) if user else False
 
@@ -728,8 +803,6 @@ def create_dp() -> Dispatcher:
             f"💎 <b>{SUBSCRIPTION_DAYS} дней</b> — {STARS_AMOUNT} ⭐ или {PRICE_RUB} ₽"
         )
         await message.answer(text, reply_markup=kb_main(has_sub))
-
-    # ── menu callback ────────────────────────────────────
 
     @dp.callback_query(F.data == "menu")
     async def cb_menu(call: types.CallbackQuery):
@@ -742,8 +815,6 @@ def create_dp() -> Dispatcher:
         await safe_edit(call.message, text, kb_main(has_sub))
         await call.answer()
 
-    # ── profile ──────────────────────────────────────────
-
     @dp.callback_query(F.data == "profile")
     async def cb_profile(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -752,8 +823,6 @@ def create_dp() -> Dispatcher:
             return
         await safe_edit(call.message, format_profile(user), kb_back())
         await call.answer()
-
-    # ── my key ───────────────────────────────────────────
 
     @dp.callback_query(F.data == "mykey")
     async def cb_mykey(call: types.CallbackQuery):
@@ -778,8 +847,6 @@ def create_dp() -> Dispatcher:
         await safe_edit(call.message, text, kb_back())
         await call.answer()
 
-    # ── buy ──────────────────────────────────────────────
-
     @dp.callback_query(F.data == "buy")
     async def cb_buy(call: types.CallbackQuery):
         user = await db_get_user(call.from_user.id)
@@ -799,8 +866,6 @@ def create_dp() -> Dispatcher:
         await safe_edit(call.message, text, kb_buy())
         await call.answer()
 
-    # ── pay stars ────────────────────────────────────────
-
     @dp.callback_query(F.data == "pay_stars")
     async def cb_pay_stars(call: types.CallbackQuery):
         await call.answer()
@@ -808,7 +873,7 @@ def create_dp() -> Dispatcher:
             title=f"AstroVPN — {SUBSCRIPTION_DAYS} дней",
             description=f"VPN доступ на {SUBSCRIPTION_DAYS} дней. VLESS + Reality.",
             payload=f"vpn_{SUBSCRIPTION_DAYS}d_{call.from_user.id}",
-            provider_token="",   # обязательно пустая строка для Stars
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice(label=f"VPN {SUBSCRIPTION_DAYS} дней", amount=STARS_AMOUNT)],
         )
@@ -837,7 +902,6 @@ def create_dp() -> Dispatcher:
                 f"Ваш ID: <code>{tg_id}</code>",
                 parse_mode="HTML"
             )
-        # Уведомляем админа
         for admin_id in ADMIN_IDS:
             try:
                 stars = message.successful_payment.total_amount
@@ -851,14 +915,11 @@ def create_dp() -> Dispatcher:
             except Exception:
                 pass
 
-    # ── pay tribute ──────────────────────────────────────
-
     @dp.callback_query(F.data == "pay_tribute")
     async def cb_pay_tribute(call: types.CallbackQuery):
         tg_id = call.from_user.id
         await db_create_user(tg_id, call.from_user.full_name or "Пользователь",
                              call.from_user.username)
-
         text = (
             "💳 <b>Оплата через СБП / Карту (Tribute)</b>\n\n"
             f"1️⃣ Перейдите по ссылке и оплатите <b>{PRICE_RUB} ₽</b>:\n"
@@ -871,7 +932,6 @@ def create_dp() -> Dispatcher:
 
     @dp.callback_query(F.data == "tribute_check")
     async def cb_tribute_check(call: types.CallbackQuery):
-        """Кнопка 'Я оплатил' — проверяем есть ли уже активная подписка."""
         user = await db_get_user(call.from_user.id)
         if user and is_sub_active(user):
             raw = user["subscription_expires"]
@@ -893,8 +953,6 @@ def create_dp() -> Dispatcher:
             )
         await call.answer()
 
-    # ── guide ────────────────────────────────────────────
-
     @dp.message(Command("guide"))
     async def cmd_guide(message: types.Message):
         await message.answer("📱 <b>Выберите платформу:</b>", reply_markup=kb_guide())
@@ -907,14 +965,20 @@ def create_dp() -> Dispatcher:
     @dp.callback_query(F.data == "guide_ios")
     async def cb_guide_ios(call: types.CallbackQuery):
         text = (
-            "🍎 <b>iOS — Amnezia VPN</b>\n\n"
-            "1️⃣ Скачайте Amnezia VPN:\n"
-            "https://apps.apple.com/us/app/amneziavpn/id1600529900\n\n"
-            "2️⃣ Откройте бот → 🔑 Мой ключ → скопируйте ключ\n\n"
-            "3️⃣ Откройте Amnezia VPN\n\n"
-            "4️⃣ Нажмите <b>+</b> → <b>Вставить из буфера</b>\n\n"
-            "5️⃣ Нажмите <b>Подключиться</b> ✅\n\n"
-            "❓ Проблемы? Пишите: " + SUPPORT_USERNAME
+            "🍎 <b>Подключение на iPhone (iOS)</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "📲 <b>Шаг 1.</b> Скачайте приложение <b>Streisand</b>:\n"
+            "👉 https://apps.apple.com/app/streisand/id6450534064\n\n"
+            "🔑 <b>Шаг 2.</b> Вернитесь в бот → нажмите <b>🔑 Мой ключ</b> "
+            "→ тапните по ключу — он скопируется автоматически 📋\n\n"
+            "➕ <b>Шаг 3.</b> Откройте <b>Streisand</b> → нажмите <b>+</b> "
+            "в правом верхнем углу\n\n"
+            "📥 <b>Шаг 4.</b> Выберите <b>«Добавить из буфера»</b>\n\n"
+            "⚡ <b>Шаг 5.</b> Нажмите большой <b>тумблер</b> — VPN включён!\n\n"
+            "🎉 <b>Готово! Интернет работает без ограничений.</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Если не подключается — выключите и включите тумблер снова</i>\n\n"
+            f"🆘 Нужна помощь? Пишите: {SUPPORT_USERNAME}"
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
@@ -922,20 +986,57 @@ def create_dp() -> Dispatcher:
     @dp.callback_query(F.data == "guide_android")
     async def cb_guide_android(call: types.CallbackQuery):
         text = (
-            "🤖 <b>Android — v2rayNG</b>\n\n"
-            "1️⃣ Скачайте v2rayNG:\n"
-            "https://play.google.com/store/apps/details?id=com.v2ray.ang\n\n"
-            "2️⃣ Откройте бот → 🔑 Мой ключ → скопируйте ключ\n\n"
-            "3️⃣ Откройте v2rayNG\n\n"
-            "4️⃣ Нажмите <b>+</b> → <b>Import config from clipboard</b>\n\n"
-            "5️⃣ Нажмите кнопку ▶ для подключения ✅\n\n"
-            "💡 <i>Также работает Amnezia VPN — те же шаги</i>\n\n"
-            "❓ Проблемы? Пишите: " + SUPPORT_USERNAME
+            "🤖 <b>Подключение на Android</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "📲 <b>Шаг 1.</b> Скачайте приложение <b>Hiddify</b>:\n"
+            "👉 https://play.google.com/store/apps/details?id=app.hiddify.com\n\n"
+            "🔹 <i>Google Play не работает? Скачайте APK:</i>\n"
+            "👉 https://hiddify.com/app/\n\n"
+            "🔑 <b>Шаг 2.</b> Вернитесь в бот → нажмите <b>🔑 Мой ключ</b> "
+            "→ тапните по ключу — он скопируется автоматически 📋\n\n"
+            "➕ <b>Шаг 3.</b> Откройте <b>Hiddify</b> → нажмите <b>+</b>\n\n"
+            "📥 <b>Шаг 4.</b> Выберите <b>«Добавить из буфера обмена»</b>\n\n"
+            "⚡ <b>Шаг 5.</b> Нажмите кнопку <b>«Подключить»</b> — готово!\n\n"
+            "🎉 <b>Готово! Интернет работает без ограничений.</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Также работает v2rayNG — шаги те же самые</i>\n\n"
+            f"🆘 Нужна помощь? Пишите: {SUPPORT_USERNAME}"
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
 
-    # ── support ──────────────────────────────────────────
+    @dp.callback_query(F.data == "referrals")
+    async def cb_referrals(call: types.CallbackQuery):
+        user_id = call.from_user.id
+
+        try:
+            me = await call.bot.get_me()
+            bot_username = me.username or ""
+        except Exception as e:
+            logger.warning(f"cb_referrals: get_me failed: {e}")
+            bot_username = ""
+
+        ref_link = (
+            f"https://t.me/{bot_username}?start=ref{user_id}"
+            if bot_username else f"?start=ref{user_id}"
+        )
+        invited = await db_count_referrals(user_id)
+        bonus_days = (await db_count_referral_payments(user_id)) * REFERRAL_BONUS_DAYS
+
+        text = (
+            "🎁 <b>Реферальная программа</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"За каждую оплату приглашённого друга вы получаете "
+            f"<b>+{REFERRAL_BONUS_DAYS} дней</b> к подписке ⭐\n\n"
+            "🔗 <b>Ваша реферальная ссылка:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            f"👥 Приглашено друзей: <b>{invited}</b>\n"
+            f"📅 Получено бонусных дней: <b>{bonus_days}</b>\n\n"
+            "💡 <i>Поделитесь ссылкой с друзьями — они получат VPN, "
+            "а вы дополнительные дни подписки!</i>"
+        )
+        await safe_edit(call.message, text, kb_back())
+        await call.answer()
 
     @dp.callback_query(F.data == "support")
     async def cb_support(call: types.CallbackQuery):
@@ -946,8 +1047,6 @@ def create_dp() -> Dispatcher:
         )
         await safe_edit(call.message, text, kb_back())
         await call.answer()
-
-    # ── admin ────────────────────────────────────────────
 
     def admin_only_check(tg_id: int) -> bool:
         return tg_id in ADMIN_IDS
@@ -974,7 +1073,6 @@ def create_dp() -> Dispatcher:
         if not users:
             await message.answer("Пользователей нет.")
             return
-        now = datetime.utcnow()
         active = sum(1 for u in users if is_sub_active(u))
         lines = [f"👥 <b>Пользователи ({len(users)}):</b>"]
         for u in users[:50]:
@@ -1057,8 +1155,6 @@ def create_dp() -> Dispatcher:
         except Exception:
             pass
 
-    # ── любое другое сообщение ───────────────────────────
-
     @dp.message()
     async def any_message(message: types.Message):
         tg_id = message.from_user.id
@@ -1093,7 +1189,6 @@ async def main():
     )
     dp = create_dp()
 
-    # Запускаем scheduler
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         check_expired_subscriptions,
@@ -1106,7 +1201,6 @@ async def main():
     scheduler.start()
     logger.info("Scheduler запущен (каждые 10 минут)")
 
-    # Запускаем aiohttp для Tribute webhook
     app = web.Application()
 
     async def webhook_route(request: web.Request) -> web.Response:
