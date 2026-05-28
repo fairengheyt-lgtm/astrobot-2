@@ -53,9 +53,12 @@ async def cmd_server_list(message: types.Message):
         load = s["current_clients"]
         cap = s["max_clients"]
         pct = round(load / max(1, cap) * 100)
+        api_p = s.get("api_port") or s.get("port") or "?"
+        vpn_p = s.get("vpn_port") or "?"
         lines.append(
             f"\n<b>{s['name']}</b> (ID: {s['id']})\n"
-            f"📍 {s['host']}:{s['port']}\n"
+            f"📍 {s['host']}\n"
+            f"🔌 API: <code>{api_p}</code> | 🌐 VPN: <code>{vpn_p}</code>\n"
             f"👥 {load}/{cap} ({pct}%)\n"
             f"{status}"
         )
@@ -85,11 +88,14 @@ async def cmd_server_info(message: types.Message):
         return
 
     status = "🟢 Активен" if s.get("enabled") else "🔴 Выключен"
+    api_p = s.get("api_port") or s.get("port") or "?"
+    vpn_p = s.get("vpn_port") or "?"
     text = (
         f"🌍 <b>{s['name']}</b> (ID: {s['id']})\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"📍 Host: <code>{s['host']}</code>\n"
-        f"🔌 Port: <code>{s['port']}</code>\n"
+        f"🔌 API порт (панель 3X-UI): <code>{api_p}</code>\n"
+        f"🌐 VPN порт (для ссылки клиенту): <code>{vpn_p}</code>\n"
         f"🛤 Base path: <code>{s.get('base_path') or '—'}</code>\n"
         f"🔑 API token: <code>{'есть' if s.get('api_token') else '—'}</code>\n"
         f"📡 Inbound ID: <code>{s['inbound_id']}</code>\n"
@@ -206,7 +212,8 @@ async def cmd_server_delete(message: types.Message):
 class ServerAddSG(StatesGroup):
     name = State()
     host = State()
-    port = State()
+    api_port = State()       # порт панели 3X-UI (для API запросов)
+    vpn_port = State()       # порт VLESS-подключения (для ссылки клиенту)
     base_path = State()
     api_token = State()
     inbound_id = State()
@@ -247,7 +254,7 @@ async def cmd_server_add(message: types.Message, state: FSMContext):
     await state.set_state(ServerAddSG.name)
     await message.answer(
         "➕ <b>Добавление сервера</b>\n\n"
-        "Шаг 1/10. Введите <b>название</b> сервера (например: Нидерланды):",
+        "Шаг 1/11. Введите <b>название</b> сервера (например: Нидерланды):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -272,7 +279,7 @@ async def srv_step_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text.strip()[:80])
     await state.set_state(ServerAddSG.host)
     await message.answer(
-        "Шаг 2/10. Введите <b>host</b> (например: <code>https://89.127.207.207</code> или <code>http://1.2.3.4</code>):",
+        "Шаг 2/11. Введите <b>host</b> (например: <code>https://89.127.207.207</code> или <code>http://1.2.3.4</code>):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -286,27 +293,47 @@ async def srv_step_host(message: types.Message, state: FSMContext):
     if not host.startswith("http://") and not host.startswith("https://"):
         host = f"http://{host}"
     await state.update_data(host=host)
-    await state.set_state(ServerAddSG.port)
+    await state.set_state(ServerAddSG.api_port)
     await message.answer(
-        "Шаг 3/10. Введите <b>port</b> (например: <code>2053</code>):",
+        "Шаг 3/11. Введите порт <b>ПАНЕЛИ 3X-UI</b> "
+        "(для API-запросов, например <code>33758</code>):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
 
 
-@router.message(ServerAddSG.port)
-async def srv_step_port(message: types.Message, state: FSMContext):
+@router.message(ServerAddSG.api_port)
+async def srv_step_api_port(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     try:
         port = int(message.text.strip())
     except ValueError:
-        await message.answer("Порт должен быть числом. Попробуйте ещё раз:")
+        await message.answer("API-порт должен быть числом. Попробуйте ещё раз:")
         return
-    await state.update_data(port=port)
+    await state.update_data(api_port=port)
+    await state.set_state(ServerAddSG.vpn_port)
+    await message.answer(
+        "Шаг 4/11. Введите порт <b>VPN-подключения</b> "
+        "(для ссылки клиенту, обычно <code>443</code>):",
+        reply_markup=_kb_cancel(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(ServerAddSG.vpn_port)
+async def srv_step_vpn_port(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        port = int(message.text.strip())
+    except ValueError:
+        await message.answer("VPN-порт должен быть числом. Попробуйте ещё раз:")
+        return
+    await state.update_data(vpn_port=port)
     await state.set_state(ServerAddSG.base_path)
     await message.answer(
-        "Шаг 4/10. Введите <b>base path</b> (или нажмите «Пропустить» если его нет):",
+        "Шаг 5/11. Введите <b>base path</b> (или нажмите «Пропустить» если его нет):",
         reply_markup=_kb_skip(),
         parse_mode="HTML",
     )
@@ -319,7 +346,7 @@ async def srv_step_base_path(message: types.Message, state: FSMContext):
     await state.update_data(base_path=message.text.strip())
     await state.set_state(ServerAddSG.api_token)
     await message.answer(
-        "Шаг 5/10. Введите <b>API token</b> (Bearer-токен 3X-UI):",
+        "Шаг 6/11. Введите <b>API token</b> (Bearer-токен 3X-UI):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -332,7 +359,7 @@ async def srv_skip_base_path(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(base_path="")
     await state.set_state(ServerAddSG.api_token)
     await call.message.answer(
-        "Шаг 5/10. Введите <b>API token</b> (Bearer-токен 3X-UI):",
+        "Шаг 6/11. Введите <b>API token</b> (Bearer-токен 3X-UI):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -346,7 +373,7 @@ async def srv_step_api_token(message: types.Message, state: FSMContext):
     await state.update_data(api_token=message.text.strip())
     await state.set_state(ServerAddSG.inbound_id)
     await message.answer(
-        "Шаг 6/10. Введите <b>Inbound ID</b> (например: <code>1</code>):",
+        "Шаг 7/11. Введите <b>Inbound ID</b> (например: <code>1</code>):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -364,7 +391,7 @@ async def srv_step_inbound(message: types.Message, state: FSMContext):
     await state.update_data(inbound_id=inbound_id)
     await state.set_state(ServerAddSG.public_key)
     await message.answer(
-        "Шаг 7/10. Введите <b>Public Key</b> (Reality pbk):",
+        "Шаг 8/11. Введите <b>Public Key</b> (Reality pbk):",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -377,7 +404,7 @@ async def srv_step_pubkey(message: types.Message, state: FSMContext):
     await state.update_data(public_key=message.text.strip())
     await state.set_state(ServerAddSG.short_id)
     await message.answer(
-        "Шаг 8/10. Введите <b>Short ID</b>:",
+        "Шаг 9/11. Введите <b>Short ID</b>:",
         reply_markup=_kb_cancel(),
         parse_mode="HTML",
     )
@@ -390,7 +417,7 @@ async def srv_step_shortid(message: types.Message, state: FSMContext):
     await state.update_data(short_id=message.text.strip())
     await state.set_state(ServerAddSG.sni)
     await message.answer(
-        "Шаг 9/10. Введите <b>SNI</b> (по умолчанию: <code>www.apple.com</code>):",
+        "Шаг 10/11. Введите <b>SNI</b> (по умолчанию: <code>www.apple.com</code>):",
         reply_markup=_kb_skip(),
         parse_mode="HTML",
     )
@@ -404,7 +431,7 @@ async def srv_step_sni(message: types.Message, state: FSMContext):
     await state.update_data(sni=sni)
     await state.set_state(ServerAddSG.max_clients)
     await message.answer(
-        f"Шаг 10/10. Введите <b>лимит клиентов</b> (по умолчанию: <code>{DEFAULT_SERVER_MAX_CLIENTS}</code>):",
+        f"Шаг 11/11. Введите <b>лимит клиентов</b> (по умолчанию: <code>{DEFAULT_SERVER_MAX_CLIENTS}</code>):",
         reply_markup=_kb_skip(),
         parse_mode="HTML",
     )
@@ -417,7 +444,7 @@ async def srv_skip_sni(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(sni="www.apple.com")
     await state.set_state(ServerAddSG.max_clients)
     await call.message.answer(
-        f"Шаг 10/10. Введите <b>лимит клиентов</b> (по умолчанию: <code>{DEFAULT_SERVER_MAX_CLIENTS}</code>):",
+        f"Шаг 11/11. Введите <b>лимит клиентов</b> (по умолчанию: <code>{DEFAULT_SERVER_MAX_CLIENTS}</code>):",
         reply_markup=_kb_skip(),
         parse_mode="HTML",
     )
@@ -431,7 +458,8 @@ async def _show_summary(target, state: FSMContext):
         "━━━━━━━━━━━━━━━━━━\n"
         f"📝 Имя: <b>{data.get('name')}</b>\n"
         f"📍 Host: <code>{data.get('host')}</code>\n"
-        f"🔌 Port: <code>{data.get('port')}</code>\n"
+        f"🔌 API порт (панель): <code>{data.get('api_port')}</code>\n"
+        f"🌐 VPN порт (для ссылки): <code>{data.get('vpn_port')}</code>\n"
         f"🛤 Base path: <code>{data.get('base_path') or '—'}</code>\n"
         f"🔑 API token: <code>{'есть' if data.get('api_token') else '—'}</code>\n"
         f"📡 Inbound ID: <code>{data.get('inbound_id')}</code>\n"

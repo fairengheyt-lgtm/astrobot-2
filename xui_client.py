@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════
 
 def _server_base_url(server: dict) -> str:
+    """Базовый URL панели 3X-UI для API-запросов (использует api_port)."""
     host = server["host"].rstrip("/")
     if not host.startswith("http://") and not host.startswith("https://"):
         host = f"http://{host}"
-    base = f"{host}:{server['port']}"
+    # api_port = порт панели 3X-UI (например 33758).
+    # Fallback на старое поле `port` для случаев когда миграция ещё не отработала.
+    api_port = server.get("api_port") or server.get("port")
+    base = f"{host}:{api_port}"
     if server.get("base_path"):
         base = f"{base}/{server['base_path'].strip('/')}"
     return base
@@ -48,9 +52,12 @@ def _auth_headers(server: dict) -> dict:
 
 
 def build_vless_link(vpn_uuid: str, server: dict) -> str:
-    """Собирает VLESS ссылку используя параметры конкретного сервера."""
+    """Собирает VLESS-ссылку для клиента используя vpn_port (порт VLESS-подключения)."""
+    # vpn_port = публичный порт VLESS-подключения (обычно 443).
+    # НЕ путать с api_port (порт панели 3X-UI).
+    vpn_port = server.get("vpn_port") or 443
     return (
-        f"vless://{vpn_uuid}@{_server_ip(server)}:{server['port']}"
+        f"vless://{vpn_uuid}@{_server_ip(server)}:{vpn_port}"
         f"?type=tcp&security=reality"
         f"&pbk={server.get('public_key','')}"
         f"&sni={server.get('sni','www.apple.com')}"

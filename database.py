@@ -18,6 +18,7 @@ from config import (
     DB_PATH,
     DEFAULT_SERVER_MAX_CLIENTS,
     XUI_HOST, XUI_PORT, XUI_BASE_PATH, XUI_TOKEN, XUI_INBOUND_ID,
+    VPN_PORT,
     VPN_PUBLIC_KEY, VPN_SHORT_ID, VPN_SNI, VPN_FINGERPRINT, VPN_FLOW,
 )
 
@@ -39,6 +40,18 @@ async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, ddl:
     if not await _column_exists(db, table, column):
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
         logger.info(f"DB: добавлена колонка {table}.{column}")
+
+
+async def _ensure_renamed(db: aiosqlite.Connection, table: str, old_col: str, new_col: str):
+    """Безопасно переименовывает колонку (SQLite ≥ 3.25).
+    Срабатывает только если новой колонки ещё нет, а старая существует.
+    """
+    if await _column_exists(db, table, new_col):
+        return  # уже переименовано — повторный запуск
+    if not await _column_exists(db, table, old_col):
+        return  # нет ни старой, ни новой — нечего делать (свежая БД)
+    await db.execute(f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}")
+    logger.info(f"DB: переименована колонка {table}.{old_col} → {new_col}")
 
 
 async def init_db():
@@ -77,12 +90,14 @@ async def init_db():
         """)
 
         # ── servers (мультисервер) ───────────────────
+        # api_port — порт панели 3X-UI (для API), vpn_port — порт VLESS-подключения (для ссылки клиенту).
         await db.execute("""
             CREATE TABLE IF NOT EXISTS servers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 host TEXT NOT NULL,
-                port INTEGER NOT NULL,
+                api_port INTEGER NOT NULL,
+                vpn_port INTEGER NOT NULL,
                 base_path TEXT DEFAULT '',
                 api_token TEXT DEFAULT '',
                 inbound_id INTEGER NOT NULL,
@@ -115,6 +130,17 @@ async def init_db():
         await _ensure_column(db, "users", "notified_1d_after",  "notified_1d_after INTEGER DEFAULT 0")
         await _ensure_column(db, "users", "notified_7d_after",  "notified_7d_after INTEGER DEFAULT 0")
 
+        # ── миграции servers: разделение port на api_port + vpn_port ──
+        # Старая схема имела единственное поле `port` (= порт панели 3X-UI).
+        # Новая: api_port (для API) + vpn_port (для VLESS-ссылки клиенту).
+        await _ensure_renamed(db, "servers", "port", "api_port")
+        await _ensure_column(db, "servers", "vpn_port", "vpn_port INTEGER")
+        # Бэкфилл vpn_port для существующих записей — берём из ENV (VPN_PORT, обычно 443)
+        await db.execute(
+            "UPDATE servers SET vpn_port=? WHERE vpn_port IS NULL",
+            (VPN_PORT,)
+        )
+
         await db.commit()
 
         # ── сид первого сервера из ENV ───────────────
@@ -129,14 +155,15 @@ async def init_db():
                 host = f"http://{host}"
             await db.execute(
                 """INSERT INTO servers
-                   (name, host, port, base_path, api_token, inbound_id,
+                   (name, host, api_port, vpn_port, base_path, api_token, inbound_id,
                     public_key, short_id, sni, fingerprint, flow, protocol,
                     max_clients, enabled)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     "Сервер 1",
                     host,
-                    XUI_PORT,
+                    XUI_PORT,        # api_port — порт панели 3X-UI
+                    VPN_PORT,        # vpn_port — порт VLESS-подключения
                     XUI_BASE_PATH or "",
                     XUI_TOKEN or "",
                     XUI_INBOUND_ID,
@@ -151,7 +178,10 @@ async def init_db():
                 )
             )
             await db.commit()
-            logger.info(f"DB: создан первый сервер 'Сервер 1' из ENV переменных")
+            logger.info(
+                f"DB: создан первый сервер 'Сервер 1' из ENV "
+                f"(api_port={XUI_PORT}, vpn_port={VPN_PORT})"
+            )
 
 
 # ══════════════════════════════════════════════════════
@@ -400,18 +430,22 @@ async def db_all_servers(only_enabled: bool = False) -> list[dict]:
 
 
 async def db_create_server(data: dict) -> int:
-    """Создаёт сервер. Возвращает id новой записи."""
+    """Создаёт сервер. Возвращает id новой записи.
+
+    Требует data['api_port'] (порт панели) и data['vpn_port'] (порт VLESS).
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             """INSERT INTO servers
-               (name, host, port, base_path, api_token, inbound_id,
+               (name, host, api_port, vpn_port, base_path, api_token, inbound_id,
                 public_key, short_id, sni, fingerprint, flow, protocol,
                 max_clients, enabled)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["name"],
                 data["host"],
-                int(data["port"]),
+                int(data["api_port"]),
+                int(data["vpn_port"]),
                 data.get("base_path", "") or "",
                 data.get("api_token", "") or "",
                 int(data["inbound_id"]),
